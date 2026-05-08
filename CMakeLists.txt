@@ -14,19 +14,29 @@ if(NOT SDL2_FOUND)
     pkg_check_modules(SDL2 REQUIRED sdl2)
 endif()
 
+# ── ImGui via FetchContent (clones if imgui/ not already present) ─────────────
+include(FetchContent)
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.91.1
+    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/imgui
+)
+FetchContent_MakeAvailable(imgui)
+
 # ── ImGui static library ──────────────────────────────────────────────────────
 add_library(imgui_lib STATIC
-    imgui/imgui.cpp
-    imgui/imgui_draw.cpp
-    imgui/imgui_tables.cpp
-    imgui/imgui_widgets.cpp
-    imgui/backends/imgui_impl_sdl2.cpp
-    imgui/backends/imgui_impl_opengl3.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/imgui.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/imgui_draw.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/imgui_tables.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/imgui_widgets.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/backends/imgui_impl_sdl2.cpp
+    ${CMAKE_SOURCE_DIR}/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 target_include_directories(imgui_lib PUBLIC
-    imgui/
-    imgui/backends/
+    ${CMAKE_SOURCE_DIR}/imgui/
+    ${CMAKE_SOURCE_DIR}/imgui/backends/
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -34,8 +44,8 @@ target_include_directories(imgui_lib PUBLIC
 function(kg_target NAME SOURCE)
     add_executable(${NAME} ${SOURCE})
     target_include_directories(${NAME} PRIVATE
-        imgui/
-        imgui/backends/
+        ${CMAKE_SOURCE_DIR}/imgui/
+        ${CMAKE_SOURCE_DIR}/imgui/backends/
         ${SDL2_INCLUDE_DIRS}
     )
     target_link_libraries(${NAME} PRIVATE
