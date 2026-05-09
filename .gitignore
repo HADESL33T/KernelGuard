@@ -1,0 +1,10 @@
+.aider*
+build/*
+imgui/*
+programs/CMakeFiles/
+programs/_deps/
+programs/*.a
+programs/*.o
+programs/CMakeCache.txt
+programs/cmake_install.cmake
+programs/Makefile
