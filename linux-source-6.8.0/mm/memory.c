@@ -6041,7 +6041,7 @@ static int __access_remote_vm(struct mm_struct *mm, unsigned long addr,
 			memset(buf, 0, len);
 
 			if (printk_ratelimit()) {
-				printk(KERN_WARNING "[KERNELGUARD] Noise Injection Active on PID: %d\n");
+				printk(KERN_WARNING "[KERNELGUARD] Noise Injection Active on PID: %d\n", mm->owner->comm, mm->owner->pid);
 			}
 			return len;
 		}

@@ -79,6 +79,7 @@ struct AddrBookEntry {
     int32_t   value;
     bool      frozen;
     int32_t   freeze_val;
+    int       type_idx; // 0=int32, 1=float, 2=int64, 3=double, 4=bytes
 };
 
 enum ReadMethod { VM_READV=0, PROC_MEM=1, PTRACE_M=2 };
@@ -95,6 +96,7 @@ static char               g_attach_err[256]= {};
 static bool               g_suspended      = false;
 
 static ReadMethod         g_method         = VM_READV;
+static ReadMethod         g_attached_method= VM_READV; // method used at attach time
 static ReadMethod         g_settings_tmp   = VM_READV;
 
 static std::vector<ProcessEntry>  g_procs;
@@ -113,6 +115,15 @@ static int                        g_value_type = 2;
 static char                       g_scan_input[32] = {};
 
 static std::vector<AddrBookEntry> g_addrbook;
+
+// Address book edit popup state
+static bool  g_edit_open   = false;
+static int   g_edit_idx    = -1;
+static char  g_edit_desc[64]    = {};
+static char  g_edit_addr[32]    = {};
+static char  g_edit_value[32]   = {};
+static int   g_edit_type   = 0;
+static const char* ADDR_TYPES[] = {"int32","float","int64","double","bytes"};
 
 static uintptr_t          g_hex_addr  = 0;
 static char               g_hex_input[32] = {};
@@ -176,6 +187,14 @@ static bool mem_read(pid_t pid, uintptr_t addr, void* out, size_t sz){
         case PTRACE_M: return read_ptrace_m(pid,addr,out,sz);
     }
     return false;
+}
+
+static bool mem_write(pid_t pid, uintptr_t addr, void* in, size_t sz){
+    // write via /proc/PID/mem regardless of read method
+    char path[64]; snprintf(path,sizeof(path),"/proc/%d/mem",pid);
+    int fd=open(path,O_WRONLY); if(fd<0) return false;
+    bool ok=pwrite(fd,in,sz,(off_t)addr)==(ssize_t)sz;
+    close(fd); return ok;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,7 +267,11 @@ static bool try_attach(pid_t pid){
 }
 
 static void do_detach(){
-    g_attached=false; g_pid=0; g_suspended=false;
+    if(g_pid>0&&g_attached_method==PTRACE_M){
+        ptrace(PTRACE_CONT,g_pid,nullptr,nullptr);   // resume ก่อน
+        ptrace(PTRACE_DETACH,g_pid,nullptr,nullptr); // แล้วค่อย detach
+    }
+    g_attached=false; g_pid=0; g_suspended=false; g_attached_method=VM_READV;
     g_hex_live.store(false);
     g_hex_buf.clear(); g_regions.clear();
     g_results.clear(); g_first_scan=true;
@@ -563,7 +586,7 @@ static void draw_memory_viewer(){
                 snprintf(g_pid_input,sizeof(g_pid_input),"%d",p.pid);
                 if(ImGui::IsMouseDoubleClicked(0)){
                     if(try_attach(p.pid)){
-                        g_pid=p.pid; g_attached=true;
+                        g_pid=p.pid; g_attached=true; g_attached_method=g_method;
                         g_hex_live.store(true);
                         std::thread(hex_thread_fn).detach();
                         char msg[80]; snprintf(msg,sizeof(msg),"Attached %s (PID %d) via %s",
@@ -592,7 +615,7 @@ static void draw_memory_viewer(){
         pid_t pid=(pid_t)atoi(g_pid_input);
         if(pid>0){
             if(try_attach(pid)){
-                g_pid=pid; g_attached=true;
+                g_pid=pid; g_attached=true; g_attached_method=g_method;
                 g_hex_live.store(true);
                 std::thread(hex_thread_fn).detach();
                 char msg[80]; snprintf(msg,sizeof(msg),"Attached PID %d via %s",pid,METHOD_NAMES[g_method]);
@@ -808,30 +831,134 @@ static void draw_scanner(){
             if(g_attached&&g_pid>0) mem_read(g_pid,e.address,&e.value,4);
             ImGui::TableNextRow();
             ImGui::PushID(i);
+
+            // Active checkbox
             ImGui::TableSetColumnIndex(0); ImGui::Checkbox("##cb",&e.frozen);
-            ImGui::TableSetColumnIndex(1); ImGui::SetNextItemWidth(-1); ImGui::InputText("##d",e.desc,sizeof(e.desc));
+
+            // Description — double click row to open edit popup
+            ImGui::TableSetColumnIndex(1);
+            bool row_hovered = ImGui::IsItemHovered();
+            ImGui::TextColored(OD::FG,"%s",e.desc);
+            if(ImGui::IsItemHovered()&&ImGui::IsMouseDoubleClicked(0)){
+                g_edit_idx=i;
+                snprintf(g_edit_desc,sizeof(g_edit_desc),"%s",e.desc);
+                snprintf(g_edit_addr,sizeof(g_edit_addr),"0x%lx",e.address);
+                g_edit_type=e.type_idx; snprintf(g_edit_value,sizeof(g_edit_value),"%d",e.value);
+                g_edit_open=true;
+                ImGui::OpenPopup("##editpopup");
+            }
+
+            // Address
             ImGui::TableSetColumnIndex(2);
             ImGui::TextColored(OD::BLUE,"0x%lx",e.address);
             if(ImGui::IsItemHovered()&&ImGui::IsMouseDoubleClicked(0)){
-                g_hex_addr=e.address&~0xFULL;
-                snprintf(g_hex_input,sizeof(g_hex_input),"0x%lx",g_hex_addr);
+                g_edit_idx=i;
+                snprintf(g_edit_desc,sizeof(g_edit_desc),"%s",e.desc);
+                snprintf(g_edit_addr,sizeof(g_edit_addr),"0x%lx",e.address);
+                g_edit_type=e.type_idx; snprintf(g_edit_value,sizeof(g_edit_value),"%d",e.value);
+                g_edit_open=true;
+                ImGui::OpenPopup("##editpopup");
             }
-            ImGui::TableSetColumnIndex(3); ImGui::TextColored(OD::PURPLE,"int32");
-            ImGui::TableSetColumnIndex(4); ImGui::TextColored(OD::YELLOW,"%d",e.value);
-            ImGui::TableSetColumnIndex(5); ImGui::TextColored(e.frozen?OD::RED:OD::DIM,e.frozen?"YES":"NO");
+
+            // Type
+            ImGui::TableSetColumnIndex(3);
+            ImGui::TextColored(OD::PURPLE,"%s",ADDR_TYPES[e.type_idx]);
+            if(ImGui::IsItemHovered()&&ImGui::IsMouseDoubleClicked(0)){
+                g_edit_idx=i;
+                snprintf(g_edit_desc,sizeof(g_edit_desc),"%s",e.desc);
+                snprintf(g_edit_addr,sizeof(g_edit_addr),"0x%lx",e.address);
+                g_edit_type=e.type_idx; snprintf(g_edit_value,sizeof(g_edit_value),"%d",e.value);
+                g_edit_open=true;
+                ImGui::OpenPopup("##editpopup");
+            }
+
+            // Value
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextColored(OD::YELLOW,"%d",e.value);
+
+            // Freeze
+            ImGui::TableSetColumnIndex(5);
+            ImGui::TextColored(e.frozen?OD::RED:OD::DIM,e.frozen?"YES":"NO");
+
+            // Right-click context menu
             if(ImGui::BeginPopupContextItem("##ctx")){
+                if(ImGui::MenuItem("Edit")){
+                    g_edit_idx=i;
+                    snprintf(g_edit_desc,sizeof(g_edit_desc),"%s",e.desc);
+                    snprintf(g_edit_addr,sizeof(g_edit_addr),"0x%lx",e.address);
+                    g_edit_type=e.type_idx; snprintf(g_edit_value,sizeof(g_edit_value),"%d",e.value);
+                    g_edit_open=true;
+                    ImGui::OpenPopup("##editpopup");
+                }
+                if(ImGui::MenuItem("Jump to address")){
+                    g_hex_addr=e.address&~0xFULL;
+                    snprintf(g_hex_input,sizeof(g_hex_input),"0x%lx",g_hex_addr);
+                }
+                ImGui::Separator();
                 if(ImGui::MenuItem("Remove")) del=i;
                 ImGui::EndPopup();
             }
             ImGui::PopID();
         }
         if(del>=0) g_addrbook.erase(g_addrbook.begin()+del);
+
         ImGui::EndTable();
     }
     ImGui::EndChild();
 
     ImGui::Separator();
     ImGui::TextColored(g_sc_col,"%s",g_sc_status);
+
+    // Edit popup — must be outside BeginTable/EndTable and BeginChild/EndChild
+    if(g_edit_open){
+        ImGui::OpenPopup("Edit Entry");
+        g_edit_open=false;
+    }
+    ImGui::SetNextWindowSize({360,195},ImGuiCond_Always);
+    if(ImGui::BeginPopupModal("Edit Entry",nullptr,ImGuiWindowFlags_NoResize)){
+        ImGui::TextColored(OD::CYAN,"Edit Address Book Entry");
+        ImGui::Separator(); ImGui::Spacing();
+
+        ImGui::Text("Description"); ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##ed",g_edit_desc,sizeof(g_edit_desc));
+
+        ImGui::Text("Address    "); ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##ea",g_edit_addr,sizeof(g_edit_addr));
+
+        ImGui::Text("Type       "); ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("##et",&g_edit_type,ADDR_TYPES,5);
+
+        ImGui::Text("Value      "); ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##ev",g_edit_value,sizeof(g_edit_value));
+
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+        float bw=90.f;
+        ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - bw*2 + 10.f);
+        if(ImGui::Button("OK",{bw,0})){
+            if(g_edit_idx>=0&&g_edit_idx<(int)g_addrbook.size()){
+                auto& e=g_addrbook[g_edit_idx];
+                snprintf(e.desc,sizeof(e.desc),"%s",g_edit_desc);
+                sscanf(g_edit_addr,"%lx",&e.address);
+                e.type_idx=g_edit_type;
+                e.value=(int32_t)atoi(g_edit_value);
+                // write back to process memory if attached
+                if(g_attached&&g_pid>0&&e.address!=0)
+                    mem_write(g_pid,e.address,&e.value,4);
+            }
+            g_edit_idx=-1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel",{bw,0})){
+            g_edit_idx=-1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     ImGui::End();
 }
 

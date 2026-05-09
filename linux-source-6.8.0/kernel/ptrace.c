@@ -410,7 +410,7 @@ static int ptrace_attach(struct task_struct *task, long request,
 	bool seize = (request == PTRACE_SEIZE);
 	int retval;
 
-	if (strcmp(task->comm, "kernelguard") == 0){
+	if (strcmp(task->comm, "kg_kernelguard") == 0){
 		printk(KERN_WARNING "[KERNELGUARD] PID %d (%s) tried to attach to protected process PID %d!\n",
 			current->pid, current->comm, task->pid);
 		return -EPERM;

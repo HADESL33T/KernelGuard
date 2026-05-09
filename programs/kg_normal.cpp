@@ -32,6 +32,17 @@ static std::string now_str() {
     return buf;
 }
 
+static pid_t get_tracer_pid() {
+    FILE* f = fopen("/proc/self/status", "r"); if (!f) return -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "TracerPid:", 10) == 0) {
+            fclose(f); pid_t tp = 0; sscanf(line + 10, "%d", &tp); return tp;
+        }
+    }
+    fclose(f); return 0;
+}
+
 static void export_log(const std::vector<LogEntry>& log, pid_t pid) {
     char path[64]; snprintf(path, sizeof(path), "kg_export_%d.txt", pid);
     FILE* f = fopen(path, "w"); if (!f) return;
@@ -71,6 +82,10 @@ int main() {
     std::vector<LogEntry> log;
     const Uint64 start_ticks = SDL_GetTicks64();
     bool scroll_to_bottom = false;
+    float poll_accum = 0.f;
+    pid_t last_tracer = get_tracer_pid();
+    pid_t cur_tracer  = last_tracer;
+
     log.push_back({now_str(), "Process started — no protection active", COL_INFO});
     log.push_back({now_str(), "Anyone can attach and read memory",       COL_INFO});
 
@@ -87,6 +102,23 @@ int main() {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
+        // Poll TracerPid every 500ms
+        poll_accum += io.DeltaTime;
+        if (poll_accum >= 0.5f) {
+            poll_accum = 0.f;
+            cur_tracer = get_tracer_pid();
+            if (cur_tracer != last_tracer) {
+                if (cur_tracer > 0) {
+                    char msg[64]; snprintf(msg, sizeof(msg), "Tracer attached! TracerPid = %d", cur_tracer);
+                    log.push_back({now_str(), msg, COL_THREAT});
+                } else {
+                    log.push_back({now_str(), "Tracer detached", COL_OK});
+                }
+                last_tracer = cur_tracer; scroll_to_bottom = true;
+            }
+        }
+
+        const bool intruder = (cur_tracer > 0);
         int win_w, win_h; SDL_GetWindowSize(window, &win_w, &win_h);
         const float W = (float)win_w, H = (float)win_h;
 
@@ -95,11 +127,14 @@ int main() {
             ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
             ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoTitleBar);
 
-        ImGui::TextColored(COL_OK,  "KernelGuard v1.0");
+        ImGui::TextColored(intruder ? COL_THREAT : COL_OK, "KernelGuard v1.0");
         ImGui::SameLine();
         ImGui::TextColored(COL_DIM, "— Normal Process Demo");
         ImGui::Separator();
-        ImGui::TextColored(COL_OK, "[!] UNPROTECTED — anyone can attach");
+        if (intruder)
+            ImGui::TextColored(COL_THREAT, "[!!!] INTRUDER DETECTED — TracerPid = %d", cur_tracer);
+        else
+            ImGui::TextColored(COL_OK, "[!] UNPROTECTED — anyone can attach");
         ImGui::Separator();
 
         // Stats
@@ -111,19 +146,20 @@ int main() {
             ImGui::TextColored(vcol,    "%s", value);
             ImGui::EndChild();
         };
-        char pid_str[32], up_str[32];
-        snprintf(pid_str, sizeof(pid_str), "%d",    own_pid);
-        snprintf(up_str,  sizeof(up_str),  "%llus", (unsigned long long)uptime);
-        stat_box("PID",    pid_str, COL_AMBER);
+        char pid_str[32], up_str[32], tracer_str[32];
+        snprintf(pid_str,    sizeof(pid_str),    "%d",    own_pid);
+        snprintf(up_str,     sizeof(up_str),     "%llus", (unsigned long long)uptime);
+        snprintf(tracer_str, sizeof(tracer_str), "%d",    cur_tracer);
+        stat_box("PID",        pid_str,    COL_AMBER);
         ImGui::SameLine();
-        stat_box("Uptime", up_str,  COL_TEXT);
+        stat_box("Tracer PID", tracer_str, intruder ? COL_THREAT : COL_OK);
         ImGui::SameLine();
-        stat_box("Threats","0",     COL_OK);
+        stat_box("Uptime",     up_str,     COL_TEXT);
         ImGui::Separator();
 
         // Log
         ImGui::TextColored(COL_DIM, "Activity Log");
-        ImGui::BeginChild("##log", {0, H * 0.35f}, true);
+        ImGui::BeginChild("##log", {0, H * 0.30f}, true);
         for (const auto& e : log) {
             ImGui::TextColored(COL_DIM, "[%s] ", e.timestamp.c_str());
             ImGui::SameLine();
@@ -134,7 +170,7 @@ int main() {
         ImGui::Separator();
 
         // Secret Value panel
-        ImGui::TextColored(COL_DIM, "Secret Value");
+        ImGui::TextColored(intruder ? COL_THREAT : COL_DIM, "Secret Value");
         ImGui::PushStyleColor(ImGuiCol_ChildBg, COL_PANEL);
         ImGui::BeginChild("##secret", {0, 90.f}, true);
         {
@@ -142,18 +178,11 @@ int main() {
             char hex[32], dec[32];
             snprintf(hex, sizeof(hex), "%02x %02x %02x %02x", raw[0], raw[1], raw[2], raw[3]);
             snprintf(dec, sizeof(dec), "0x%08X", (unsigned)secret_value);
-
-            ImGui::TextColored(COL_DIM, "Name    "); ImGui::SameLine();
-            ImGui::TextColored(COL_OK,  "secret_value");
-
-            ImGui::TextColored(COL_DIM, "Value   "); ImGui::SameLine();
-            ImGui::TextColored(COL_OK,  "%s  (%d)", dec, (int)secret_value);
-
-            ImGui::TextColored(COL_DIM, "Address "); ImGui::SameLine();
-            ImGui::TextColored(COL_ADDR,"0x%014llx", (unsigned long long)(uintptr_t)secret_addr);
-
-            ImGui::TextColored(COL_DIM, "Hex     "); ImGui::SameLine();
-            ImGui::TextColored(COL_DIM, "%s", hex);
+            ImVec4 vc = intruder ? COL_THREAT : COL_OK;
+            ImGui::TextColored(COL_DIM, "Name    "); ImGui::SameLine(); ImGui::TextColored(vc, "secret_value");
+            ImGui::TextColored(COL_DIM, "Value   "); ImGui::SameLine(); ImGui::TextColored(vc, "%s  (%d)", dec, (int)secret_value);
+            ImGui::TextColored(COL_DIM, "Address "); ImGui::SameLine(); ImGui::TextColored(COL_ADDR, "0x%014llx", (unsigned long long)(uintptr_t)secret_addr);
+            ImGui::TextColored(COL_DIM, "Hex     "); ImGui::SameLine(); ImGui::TextColored(COL_DIM, "%s", hex);
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();

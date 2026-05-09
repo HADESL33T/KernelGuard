@@ -167,7 +167,7 @@ static ssize_t process_vm_rw_core(pid_t pid, struct iov_iter *iter,
 	/* [KERNELGUARD] Block memory read on protected process */
 	task = find_get_task_by_vpid(pid);
 	if (task) {
-		if (strcmp(task->comm, "kernelguard") == 0 && !vm_write) {
+		if (strcmp(task->comm, "kg_kernelguard") == 0 && !vm_write) {
 			printk(KERN_WARNING "[KERNELGUARD] PID %d (%s) tried to read memory of protected process!\n", current->pid, current->comm);
 			put_task_struct(task);
 			return 0;
