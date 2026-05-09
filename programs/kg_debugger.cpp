@@ -219,6 +219,15 @@ static uintptr_t get_entry(pid_t pid){
 // Attach / detach
 // ─────────────────────────────────────────────────────────────────────────────
 static bool try_attach(pid_t pid){
+    if(g_method==PTRACE_M){
+        if(ptrace(PTRACE_ATTACH,pid,nullptr,nullptr)<0){
+            snprintf(g_attach_err,sizeof(g_attach_err),"BLOCKED — ptrace denied by kernel (PID %d)",pid);
+            return false;
+        }
+        waitpid(pid,nullptr,0);
+        ptrace(PTRACE_CONT,pid,nullptr,nullptr);
+        return true;
+    }
     load_regions(pid);
     uintptr_t test=0;
     for(auto& r:g_regions)
